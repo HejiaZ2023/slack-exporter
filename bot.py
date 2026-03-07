@@ -1,14 +1,32 @@
 import os
+import re
 import requests
-from flask import Flask, request, Response
+from flask import Flask, request, Response, abort
 from urllib.parse import urljoin
 from uuid import uuid4
 import json
 from dotenv import load_dotenv
+from pathvalidate import sanitize_filename
 from exporter import *
 
 app = Flask(__name__)
 load_dotenv(os.path.join(app.root_path, ".env"))
+
+
+SLACK_HOOKS_PATTERN = re.compile(r"^https://hooks\.slack\.com/")
+
+
+def _safe_post_response(response_url, text):
+    """post_response wrapper that validates the URL is a Slack hooks endpoint."""
+    if not SLACK_HOOKS_PATTERN.match(response_url):
+        raise ValueError("response_url is not a valid Slack hooks URL")
+    post_response(response_url, text)
+
+
+def _safe_filename(*parts, ext):
+    """Build a safe filename from parts, sanitising each component."""
+    sanitized = "-".join(sanitize_filename(str(p)) for p in parts)
+    return f"{sanitized}-{uuid4().hex[:6]}{ext}"
 
 
 # Flask routes
@@ -28,7 +46,7 @@ def export_channel():
     except KeyError:
         return Response("Sorry! I got an unexpected response (KeyError)."), 200
 
-    post_response(response_url, "Retrieving history for this channel...")
+    _safe_post_response(response_url, "Retrieving history for this channel...")
     ch_hist = channel_history(ch_id, response_url)
 
     export_mode = str(command_args).lower()
@@ -36,7 +54,7 @@ def export_channel():
     exports_subdir = "exports"
     exports_dir = os.path.join(app.root_path, exports_subdir)
     file_ext = ".txt" if export_mode == "text" else ".json"
-    filename = "%s-ch_%s-%s%s" % (team_domain, ch_id, str(uuid4().hex)[:6], file_ext)
+    filename = _safe_filename(team_domain, "ch", ch_id, ext=file_ext)
     filepath = os.path.join(exports_dir, filename)
     loc = urljoin(request.url_root, "download/%s" % filename)
 
@@ -60,7 +78,7 @@ def export_channel():
         else:
             json.dump(ch_hist, f, indent=4)
 
-    post_response(
+    _safe_post_response(
         response_url,
         "Done! This channel's history is available for download here (note that this link "
         "is single-use): %s" % loc,
@@ -83,7 +101,7 @@ def export_replies():
     except KeyError:
         return Response("Sorry! I got an unexpected response (KeyError)."), 200
 
-    post_response(response_url, "Retrieving reply threads for this channel...")
+    _safe_post_response(response_url, "Retrieving reply threads for this channel...")
     print(ch_id)
     ch_hist = channel_history(ch_id, response_url)
     print(ch_hist)
@@ -98,7 +116,7 @@ def export_replies():
     exports_subdir = "exports"
     exports_dir = os.path.join(app.root_path, exports_subdir)
     file_ext = ".txt" if export_mode == "text" else ".json"
-    filename = "%s-re_%s-%s%s" % (team_domain, ch_id, str(uuid4().hex)[:6], file_ext)
+    filename = _safe_filename(team_domain, "re", ch_id, ext=file_ext)
     filepath = os.path.join(exports_dir, filename)
     loc = urljoin(request.url_root, "download/%s" % filename)
 
@@ -119,7 +137,7 @@ def export_replies():
         else:
             json.dump(data_replies, f, indent=4)
 
-    post_response(
+    _safe_post_response(
         response_url,
         "Done! This channel's reply threads are available for download here (note that this "
         "link is single-use): %s" % loc,
@@ -130,7 +148,16 @@ def export_replies():
 
 @app.route("/download/<filename>")
 def download(filename):
-    path = os.path.join(app.root_path, "exports", filename)
+    safe_name = sanitize_filename(filename)
+    exports_dir = os.path.join(app.root_path, "exports")
+    path = os.path.join(exports_dir, safe_name)
+
+    # ensure resolved path stays within exports directory
+    if not os.path.realpath(path).startswith(os.path.realpath(exports_dir) + os.sep):
+        abort(400)
+
+    if not os.path.isfile(path):
+        abort(404)
 
     with open(path) as f:
         content = f.read()
@@ -146,4 +173,4 @@ def download(filename):
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true")

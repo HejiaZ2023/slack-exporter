@@ -39,7 +39,7 @@ FORM_BASE = {
     "team_domain": "testworkspace",
     "channel_id": "C001",
     "channel_name": "general",
-    "response_url": "https://hooks.example.com/response",
+    "response_url": "https://hooks.slack.com/actions/test/response",
 }
 
 MOCK_HISTORY = [
@@ -95,9 +95,7 @@ class TestExportChannel:
 
     @mock.patch("bot.post_response")
     def test_missing_form_field(self, mock_post, client):
-        resp = client.post(
-            "/slack/events/export-channel", data={"team_id": "T001"}
-        )
+        resp = client.post("/slack/events/export-channel", data={"team_id": "T001"})
         # Bot returns 200 with error text even on bad input
         assert resp.status_code == 200
 
@@ -144,9 +142,7 @@ class TestExportReplies:
         ],
     )
     @mock.patch("bot.channel_history", return_value=MOCK_HISTORY)
-    def test_json_mode(
-        self, mock_hist, mock_replies, mock_post, client, exports_dir
-    ):
+    def test_json_mode(self, mock_hist, mock_replies, mock_post, client, exports_dir):
         form = {**FORM_BASE, "text": "json"}
         resp = client.post("/slack/events/export-replies", data=form)
         assert resp.status_code == 200
@@ -160,9 +156,7 @@ class TestExportReplies:
 
     @mock.patch("bot.post_response")
     def test_missing_form_field(self, mock_post, client):
-        resp = client.post(
-            "/slack/events/export-replies", data={"team_id": "T001"}
-        )
+        resp = client.post("/slack/events/export-replies", data={"team_id": "T001"})
         assert resp.status_code == 200
 
 

@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # no parallel runs as we're in an actual Slack workspace
 concurrency:
   group: slack-integration-tests
