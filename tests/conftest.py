@@ -84,6 +84,7 @@ def confirm_workspace(request, workspace_info):
     print(f"{'=' * 60}")
 
     if not force:
+        # addopts = -s in pytest.ini ensures we see the prompt
         answer = input(f"\nRun tests in workspace '{ws['team']}'? [y/N] ")
         if answer.lower() != "y":
             pytest.exit("Test run cancelled by user.")
