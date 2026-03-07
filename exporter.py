@@ -158,13 +158,14 @@ def channel_list(team_id=None, response_url=None):
     )
 
 
-def get_file_list():
+def get_file_list(channel_id=None):
     current_page = 1
     total_pages = 1
     while current_page <= total_pages:
-        response = get_data(
-            "https://slack.com/api/files.list", params={"page": current_page}
-        )
+        params = {"page": current_page}
+        if channel_id:
+            params["channel"] = channel_id
+        response = get_data("https://slack.com/api/files.list", params=params)
         json_data = response.json()
         total_pages = json_data["paging"]["pages"]
         for file in json_data["files"]:
@@ -503,10 +504,10 @@ def download_file(dest_path, url, attempt=0):
         return True
 
 
-def save_files(file_dir):
+def save_files(file_dir, channel_id=None):
     total = 0
     start = default_timer()
-    for file_info in get_file_list():
+    for file_info in get_file_list(channel_id=channel_id):
         url = file_info["url_private"]
         file_info["name"] = sanitize_filename(file_info["name"])
         destination_filename = "{id}-{name}".format(**file_info)
@@ -610,7 +611,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "-c", action="store_true", help="Get history for all accessible conversations"
     )
-    parser.add_argument("--ch", help="With -c, restrict export to given channel ID")
+    parser.add_argument(
+        "--ch", help="With -c or --files, restrict export to given channel ID"
+    )
     parser.add_argument(
         "--fr",
         help="With -c, Unix timestamp (seconds since Jan. 1, 1970) for earliest message",
@@ -629,7 +632,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--files",
         action="store_true",
-        help="Download all files",
+        help="Download all files (use --ch to limit to a specific channel)",
     )
     parser.add_argument(
         "--csv", action="store_true", help="Output in CSV format instead of text/JSON"
@@ -729,4 +732,4 @@ if __name__ == "__main__":
             save_replies(ch_hist, ch_id, ch_list, user_list)
 
     if a.files and a.o is not None:
-        save_files(out_dir)
+        save_files(out_dir, channel_id=a.ch)
