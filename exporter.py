@@ -93,7 +93,7 @@ def get_at_cursor(url, params, cursor=None, response_url=None):
 
     try:
         if d["ok"] is False:
-            if d.get("error") in ["not_in_channel", "is_archived"]:
+            if d.get("error") in ["not_in_channel", "is_archived", "channel_not_found"]:
                 return None, {"messages": []}
 
             handle_print("I encountered an error: %s" % d, response_url)
@@ -181,15 +181,6 @@ def _ensure_channel_access(channel_id):
     if info_response.get("ok") and info_response.get("channel", {}).get("is_archived"):
         was_archived = True
 
-    join_response = post_data(
-        "https://slack.com/api/conversations.join",
-        {"channel": channel_id},
-    ).json()
-
-    if not join_response.get("ok"):
-        print(f"Could not join channel {channel_id}: {join_response.get('error')}")
-        return None
-
     if was_archived:
         unarchive_response = post_data(
             "https://slack.com/api/conversations.unarchive",
@@ -202,6 +193,15 @@ def _ensure_channel_access(channel_id):
                 f"Visit https://api.slack.com/apps to add this scope to your app."
             )
             return None
+
+    join_response = post_data(
+        "https://slack.com/api/conversations.join",
+        {"channel": channel_id},
+    ).json()
+
+    if not join_response.get("ok"):
+        print(f"Could not join channel {channel_id}: {join_response.get('error')}")
+        return None
 
     return was_archived
 
