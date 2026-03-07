@@ -2,7 +2,7 @@ name: Tests
 
 on:
   pull_request:
-    branches: [main, master]
+    branches: [main]
   workflow_dispatch:
 
 # no parallel runs as we're in an actual Slack workspace
