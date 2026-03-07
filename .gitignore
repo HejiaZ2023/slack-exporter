@@ -1,6 +1,14 @@
 .env
 exports
-__pycache__
+
+# IDE
 .idea
 .vscode
+
+# Python
+__pycache__
+*.pyc
+.pytest_cache
+
+# macOS
 .DS_Store
