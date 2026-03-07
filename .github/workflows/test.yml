@@ -1,0 +1,30 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# no parallel runs as we're in an actual Slack workspace
+concurrency:
+  group: slack-integration-tests
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements-test.txt
+
+      - name: Run tests
+        env:
+          SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
+        run: pytest tests/ --force -v
