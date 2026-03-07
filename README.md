@@ -11,7 +11,7 @@ There are two ways to use `slack-exporter` (detailed below). Both require a Slac
 1. Visit [https://api.slack.com/apps/](https://api.slack.com/apps/) and sign in to your workspace.
 2. Click `Create New App`. If prompted to select "how you'd like to configure your app's scopes", choose the `App Manifest` option. You can configure the app manually instead, but you will be prompted to enter an app name and additional steps to set up permissions instead of the single step below. Once creates, select your workspace.
 3. You should then be prompted for an app manifest. Paste the contents of the `slack.yaml` file (in the root of this repo) into the YAML box.
-4. Select `Install to Workspace` at the top of that page (or `Reinstall to Workspace` if you have done this previously) and accept at the prompt.
+4. Select `Install App` in the side bar, then `Install to Workspace` (or `Reinstall to Workspace` if you have done this previously) and accept at the prompt.
 5. Copy the `OAuth Access Token` (which will generally start with `xoxp` for user-level permissions and may be located in a section like "OAuth & Permissions" in the sidebar).
 
 ## Usage
@@ -59,6 +59,58 @@ To use the ngrok method:
     | /export-replies | https://`[host_url]`/slack/export-replies | json \| text | /export-replies json |
 
     To do this, uncomment the `slash-commands` section in `slack.yaml` and replace `YOUR_HOST_URL_HERE` with something like `https://xxxxxxxxxxxx.ngrok.io` (if using ngrok). Then navigate back to `OAuth & Permissions` and click `(Re)install to Workspace` to add these slash commands to the workspace (ensure the OAuth token in your `.env` file is still correct).
+
+## Testing
+
+> [!WARNING]
+> The test suite creates channels, posts messages, archives/unarchives channels, and
+> performs other **write operations** in your Slack workspace. **Only run these tests
+> against a dedicated test workspace.** Do not run them against a production workspace.
+
+### Setup
+
+1. **Add write scopes** to your Slack app manifest. In `slack.yaml` (or in your app settings at <https://api.slack.com/apps/>), paste the following scopes under `oauth_config.scopes.user` alongside the existing read scopes:
+
+    ```yaml
+    - channels:write
+    - chat:write
+    - groups:write
+    - im:write
+    - mpim:write
+    ```
+
+    After updating scopes, click **Reinstall to Workspace** (under *OAuth & Permissions*) and update the token in your `.env` file if it has changed.
+
+2. **Install test dependencies:**
+
+    ```shell
+    pip install -r requirements-test.txt
+    ```
+
+3. **Run the tests:**
+
+    ```shell
+    pytest tests/ -v
+    ```
+
+    Before any tests execute you will be shown the workspace name and prompted to confirm.
+    To skip the interactive prompt (e.g., in CI), pass `--force`:
+
+    ```shell
+    pytest tests/ --force -v
+    ```
+
+### What the tests do
+
+| File | Scope | Description |
+|------|-------|-------------|
+| `test_parsing.py` | Unit | Parsing helpers, name lookups, rate-limit retry, download (mocked HTTP) |
+| `test_api_integration.py` | Integration | Channel list/history, user list, replies, time-range filters, archived-channel access against the real Slack API |
+| `test_bot.py` | Unit | Flask route logic with mocked exporter functions, file download/cleanup |
+
+The integration tests create temporary channels whose names start with `_test_` (e.g., `_test_pub_a1b2c3d4`). These are archived automatically when the test session ends. Deletion is restricted to the `admin` scope, which requires an Enterprise plan, so we can't fully clean up automatically.
+
+> **Note:** Integration tests make real API calls and may be slow if rate-limited. The concurrency group ensures only one test run executes at a time to avoid channel-name collisions or conflicting state.
 
 ## Author
 

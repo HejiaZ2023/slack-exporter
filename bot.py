@@ -132,16 +132,15 @@ def export_replies():
 def download(filename):
     path = os.path.join(app.root_path, "exports", filename)
 
-    def generate():
-        with open(path) as f:
-            yield from f
-        os.remove(path)
+    with open(path) as f:
+        content = f.read()
+    os.remove(path)
 
     mimetype = (
         "text/plain" if os.path.splitext(filename)[-1] == ".txt" else "application/json"
     )
 
-    r = app.response_class(generate(), mimetype=mimetype)
+    r = Response(content, mimetype=mimetype)
     r.headers.set("Content-Disposition", "attachment", filename=filename)
     return r
 

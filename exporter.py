@@ -40,7 +40,7 @@ def handle_print(text, response_url=None):
 try:
     HEADERS = {"Authorization": "Bearer %s" % os.environ["SLACK_USER_TOKEN"]}
 except KeyError:
-    handle_print("Missing SLACK_USER_TOKEN in environment variables", response_url)
+    handle_print("Missing SLACK_USER_TOKEN in environment variables")
     sys.exit(1)
 
 
@@ -48,25 +48,32 @@ def _get_data(url, params):
     return requests.get(url, headers=HEADERS, params=params)
 
 
-def get_data(url, params):
-    """Naively deals with rate-limiting"""
+def _post_data(url, json_data):
+    return requests.post(url, headers=HEADERS, json=json_data)
 
-    # success means "not rate-limited", it can still end up with error
-    success = False
+
+def _rate_limit_retry(request_fn):
+    """Naively deals with rate-limiting for any request function."""
     attempt = 0
-
-    while not success:
-        r = _get_data(url, params)
+    while True:
+        r = request_fn()
         attempt += 1
-
         if r.status_code != 429:
-            success = True
-        else:
-            retry_after = int(r.headers["Retry-After"])  # seconds to wait
-            sleep_time = retry_after + ADDITIONAL_SLEEP_TIME
-            print(f"Rate-limited. Retrying after {sleep_time} seconds ({attempt}x).")
-            sleep(sleep_time)
-    return r
+            return r
+        retry_after = int(r.headers["Retry-After"])
+        sleep_time = retry_after + ADDITIONAL_SLEEP_TIME
+        print(f"Rate-limited. Retrying after {sleep_time} seconds ({attempt}x).")
+        sleep(sleep_time)
+
+
+def get_data(url, params):
+    """Rate-limit-aware GET request."""
+    return _rate_limit_retry(lambda: _get_data(url, params))
+
+
+def post_data(url, json_data):
+    """Rate-limit-aware POST request."""
+    return _rate_limit_retry(lambda: _post_data(url, json_data))
 
 
 # pagination handling
@@ -86,6 +93,9 @@ def get_at_cursor(url, params, cursor=None, response_url=None):
 
     try:
         if d["ok"] is False:
+            if d.get("error") in ["not_in_channel", "is_archived", "channel_not_found"]:
+                return None, {"messages": []}
+
             handle_print("I encountered an error: %s" % d, response_url)
             sys.exit(1)
 
@@ -111,8 +121,10 @@ def paginated_get(url, params, combine_key=None, response_url=None):
         )
 
         try:
-            result.extend(data) if combine_key is None else result.extend(
-                data[combine_key]
+            (
+                result.extend(data)
+                if combine_key is None
+                else result.extend(data[combine_key])
             )
         except KeyError as e:
             handle_print("Something went wrong: %s." % e, response_url)
@@ -147,12 +159,63 @@ def get_file_list():
     current_page = 1
     total_pages = 1
     while current_page <= total_pages:
-        response = get_data("https://slack.com/api/files.list", params={"page": current_page})
+        response = get_data(
+            "https://slack.com/api/files.list", params={"page": current_page}
+        )
         json_data = response.json()
         total_pages = json_data["paging"]["pages"]
         for file in json_data["files"]:
             yield file
         current_page += 1
+
+
+def _ensure_channel_access(channel_id):
+    """Try to join (and unarchive if needed) a channel. Returns whether it was archived."""
+    was_archived = False
+
+    info_response = get_data(
+        "https://slack.com/api/conversations.info",
+        {"channel": channel_id},
+    ).json()
+
+    if info_response.get("ok") and info_response.get("channel", {}).get("is_archived"):
+        was_archived = True
+
+    if was_archived:
+        unarchive_response = post_data(
+            "https://slack.com/api/conversations.unarchive",
+            {"channel": channel_id},
+        ).json()
+        if not unarchive_response.get("ok"):
+            print(
+                f"Could not unarchive channel {channel_id}: {unarchive_response.get('error')}. "
+                f"The 'channels:manage' scope is required in your SLACK_USER_TOKEN to unarchive channels. "
+                f"Visit https://api.slack.com/apps to add this scope to your app."
+            )
+            return None
+
+    join_response = post_data(
+        "https://slack.com/api/conversations.join",
+        {"channel": channel_id},
+    ).json()
+
+    if not join_response.get("ok"):
+        print(f"Could not join channel {channel_id}: {join_response.get('error')}")
+        return None
+
+    return was_archived
+
+
+def _restore_channel_archive(channel_id):
+    """Re-archive a channel that was temporarily unarchived."""
+    archive_response = post_data(
+        "https://slack.com/api/conversations.archive",
+        {"channel": channel_id},
+    ).json()
+    if not archive_response.get("ok"):
+        print(
+            f"Could not re-archive channel {channel_id}: {archive_response.get('error')}"
+        )
 
 
 def channel_history(channel_id, response_url=None, oldest=None, latest=None):
@@ -167,12 +230,33 @@ def channel_history(channel_id, response_url=None, oldest=None, latest=None):
     if latest is not None:
         params["latest"] = latest
 
-    return paginated_get(
+    result = paginated_get(
         "https://slack.com/api/conversations.history",
         params,
         combine_key="messages",
         response_url=response_url,
     )
+
+    if result:
+        return result
+
+    # If we got no results, try joining/unarchiving the channel and retry
+    was_archived = _ensure_channel_access(channel_id)
+    if was_archived is None:
+        return []
+
+    try:
+        result = paginated_get(
+            "https://slack.com/api/conversations.history",
+            params,
+            combine_key="messages",
+            response_url=response_url,
+        )
+    finally:
+        if was_archived:
+            _restore_channel_archive(channel_id)
+
+    return result
 
 
 def user_list(team_id=None, response_url=None):
@@ -382,9 +466,8 @@ def parse_channel_history(msgs, users, check_thread=False):
         if check_thread and "parent_user_id" in msg:
             entry = "\n".join("\t%s" % x for x in entry.split("\n"))
 
-        body += entry.rstrip(
-            "\t"
-        )  # get rid of any extra tabs between trailing newlines
+        # get rid of any extra tabs between trailing newlines
+        body += entry.rstrip("\t")
 
     return body
 
@@ -398,22 +481,24 @@ def parse_replies(threads, users):
     return body
 
 
-def download_file(destination_path, url, attempt = 0):
-    if os.path.exists(destination_path):
-        print("Skipping existing %s" % destination_path)
+def download_file(dest_path, url, attempt=0):
+    if os.path.exists(dest_path):
+        print("Skipping existing %s" % dest_path)
         return True
 
-    print(f"Downloading file on attempt {attempt} to {destination_path}")
-        
+    print(f"Downloading file on attempt {attempt} to {dest_path}")
+
     try:
         response = requests.get(url, headers=HEADERS)
-        with open(destination_path, "wb") as fh:
+        with open(dest_path, "wb") as fh:
             fh.write(response.content)
     except Exception as err:
-        print(f"Unexpected error on {destination_path} attempt {attempt}; {err=}, {type(err)=}")
+        typ = type(err)
+        print(f"Unexpected error on {dest_path} attempt {attempt}; {err=}, {typ=}")
         return False
     else:
         return True
+
 
 def save_files(file_dir):
     total = 0
@@ -428,8 +513,8 @@ def save_files(file_dir):
         download_success = False
         attempt = 1
         while not download_success and attempt <= 10:
-           download_success = download_file(destination_path, url, attempt)
-           attempt += 1
+            download_success = download_file(destination_path, url, attempt)
+            attempt += 1
 
         if not download_success:
             raise Exception("Failed to download from {url} after {attempt} tries")
@@ -488,13 +573,11 @@ if __name__ == "__main__":
     sep_str = "*" * 24
 
     if a.o is None and a.files:
-        print("If you specify --files you also need to specify an output directory with -o")
+        print("If you set --files you also need to set an output directory with -o")
         sys.exit(1)
 
     if a.o is not None:
-        out_dir_parent = os.path.abspath(
-            os.path.expanduser(os.path.expandvars(a.o))
-        )
+        out_dir_parent = os.path.abspath(os.path.expanduser(os.path.expandvars(a.o)))
         out_dir = os.path.join(out_dir_parent, "slack_export_%s" % ts)
 
     def save(data, filename):
