@@ -9,6 +9,9 @@ import argparse
 from dotenv import load_dotenv
 from pathvalidate import sanitize_filename
 from time import sleep
+import csv
+import base64
+import mimetypes
 
 # when rate-limited, add this to the wait time
 ADDITIONAL_SLEEP_TIME = 2
@@ -526,6 +529,67 @@ def save_files(file_dir):
     print("Downloaded %i files in %i seconds" % (total, seconds))
 
 
+def parse_to_csv(messages, users):
+    rows = []
+    headers = ["timestamp", "user", "text", "thread_ts", "reply_count", "media_data"]
+
+    for msg in messages:
+        media_data = []
+
+        # Handle files in message
+        if "files" in msg:
+            for file in msg["files"]:
+                try:
+                    url_private = file.get("url_private", "")
+                    if url_private:
+                        response = requests.get(url_private, headers=HEADERS)
+                        if response.status_code == 200:
+                            file_name = file.get("name", "")
+                            byt = base64.b64encode(response.content).decode("utf-8")
+                            mime_type = (
+                                mimetypes.guess_type(file_name)[0]
+                                or "application/octet-stream"
+                            )
+                            data_uri = f"data:{mime_type};base64,{byt}"
+                            media_data.append(data_uri)
+                except Exception as e:
+                    print(f"Failed to download file: {e}")
+
+        # Handle other attachments
+        if "attachments" in msg:
+            for attachment in msg["attachments"]:
+                try:
+                    if "image_url" in attachment:
+                        response = requests.get(attachment["image_url"])
+                        if response.status_code == 200:
+                            byt = base64.b64encode(response.content).decode("utf-8")
+                            data_uri = f"data:image/jpeg;base64,{byt}"
+                            media_data.append(data_uri)
+                except Exception as e:
+                    print(f"Failed to download attachment: {e}")
+
+        row = {
+            "timestamp": msg["ts"],
+            "user": name_from_uid(msg["user"], users) if "user" in msg else "",
+            "text": msg["text"] if "text" in msg else "",
+            "thread_ts": msg.get("thread_ts", ""),
+            "reply_count": msg.get("reply_count", 0),
+            "media_data": "||".join(media_data) if media_data else "",
+        }
+        rows.append(row)
+
+    return headers, rows
+
+
+def save_as_csv(data, filepath, users):
+    headers, rows = parse_to_csv(data, users)
+    print("Writing output to %s" % filepath)
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -566,6 +630,9 @@ if __name__ == "__main__":
         "--files",
         action="store_true",
         help="Download all files",
+    )
+    parser.add_argument(
+        "--csv", action="store_true", help="Output in CSV format instead of text/JSON"
     )
 
     a = parser.parse_args()
@@ -613,6 +680,17 @@ if __name__ == "__main__":
     def save_channel(channel_hist, channel_id, channel_list, users):
         if a.json:
             data_ch = channel_hist
+        elif a.csv:
+            if a.o is None:
+                headers, rows = parse_to_csv(channel_hist, users)
+                writer = csv.DictWriter(sys.stdout, fieldnames=headers)
+                writer.writeheader()
+                writer.writerows(rows)
+            else:
+                os.makedirs(out_dir, exist_ok=True)
+                csv_path = os.path.join(out_dir, "channel_%s.csv" % channel_id)
+                save_as_csv(channel_hist, csv_path, users)
+            return
         else:
             data_ch = parse_channel_history(channel_hist, users)
             ch_name, ch_type = name_from_ch_id(channel_id, channel_list)
