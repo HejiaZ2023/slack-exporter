@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import sys
 import requests
 import json
@@ -24,7 +25,12 @@ if os.path.isfile(env_file):
 # write handling
 
 
+SLACK_HOOKS_PATTERN = re.compile(r"^https://hooks\.slack\.com/")
+
+
 def post_response(response_url, text):
+    if not SLACK_HOOKS_PATTERN.match(response_url):
+        raise ValueError("response_url is not a valid Slack hooks URL")
     requests.post(response_url, json={"text": text})
 
 

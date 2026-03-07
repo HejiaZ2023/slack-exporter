@@ -123,9 +123,9 @@ class TestHandlePrint:
 
     @mock.patch("exporter.requests.post")
     def test_posts_to_response_url(self, mock_post):
-        handle_print("hello", response_url="https://hooks.example.com/resp")
+        handle_print("hello", response_url="https://hooks.slack.com/actions/test/resp")
         mock_post.assert_called_once_with(
-            "https://hooks.example.com/resp", json={"text": "hello"}
+            "https://hooks.slack.com/actions/test/resp", json={"text": "hello"}
         )
 
 

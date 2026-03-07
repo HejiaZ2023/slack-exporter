@@ -1,5 +1,4 @@
 import os
-import re
 import requests
 from flask import Flask, request, Response, abort
 from urllib.parse import urljoin
@@ -11,16 +10,6 @@ from exporter import *
 
 app = Flask(__name__)
 load_dotenv(os.path.join(app.root_path, ".env"))
-
-
-SLACK_HOOKS_PATTERN = re.compile(r"^https://hooks\.slack\.com/")
-
-
-def _safe_post_response(response_url, text):
-    """post_response wrapper that validates the URL is a Slack hooks endpoint."""
-    if not SLACK_HOOKS_PATTERN.match(response_url):
-        raise ValueError("response_url is not a valid Slack hooks URL")
-    post_response(response_url, text)
 
 
 def _safe_filename(*parts, ext):
@@ -46,7 +35,7 @@ def export_channel():
     except KeyError:
         return Response("Sorry! I got an unexpected response (KeyError)."), 200
 
-    _safe_post_response(response_url, "Retrieving history for this channel...")
+    post_response(response_url, "Retrieving history for this channel...")
     ch_hist = channel_history(ch_id, response_url)
 
     export_mode = str(command_args).lower()
@@ -78,7 +67,7 @@ def export_channel():
         else:
             json.dump(ch_hist, f, indent=4)
 
-    _safe_post_response(
+    post_response(
         response_url,
         "Done! This channel's history is available for download here (note that this link "
         "is single-use): %s" % loc,
@@ -101,7 +90,7 @@ def export_replies():
     except KeyError:
         return Response("Sorry! I got an unexpected response (KeyError)."), 200
 
-    _safe_post_response(response_url, "Retrieving reply threads for this channel...")
+    post_response(response_url, "Retrieving reply threads for this channel...")
     print(ch_id)
     ch_hist = channel_history(ch_id, response_url)
     print(ch_hist)
@@ -137,7 +126,7 @@ def export_replies():
         else:
             json.dump(data_replies, f, indent=4)
 
-    _safe_post_response(
+    post_response(
         response_url,
         "Done! This channel's reply threads are available for download here (note that this "
         "link is single-use): %s" % loc,
