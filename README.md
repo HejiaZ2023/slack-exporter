@@ -35,6 +35,34 @@ There are two ways to use `slack-exporter` (detailed below). Both require a Slac
 2. If you cloned this repo, make sure that dependencies are installed by running `pip install -r requirements.txt` in the repo root directory.
 3. Run `python exporter.py --help` to view the available export options. You can test that access to Slack is working by listing available conversations: `python exporter.py --lc`.
 
+### Export options
+
+Export all accessible conversations (channels, DMs, group DMs) including threaded replies:
+
+```shell
+python exporter.py -c -r -o ./exports
+```
+
+Output files are named by channel or DM username (e.g. `channel_general.txt`, `dm_alice.txt`). Messages are in chronological order. Threaded replies appear inline beneath their parent message, indented by 4 spaces.
+
+**Time-range filtering** — restrict to messages within a Unix timestamp window:
+
+```shell
+python exporter.py -c -r -o ./exports --fr 1700000000 --to 1710000000
+```
+
+**Incremental exports (deduplication)** — each export writes a `manifest.json` tracking the latest message timestamp per channel. Pass it to the next run to fetch only new messages:
+
+```shell
+# First full export
+python exporter.py -c -r -o ./exports
+
+# Subsequent incremental export — only fetches messages newer than the last run
+python exporter.py -c -r -o ./exports --manifest ./exports/slack_export_2024-01-01_120000/manifest.json
+```
+
+Channels with no new messages produce no output files. The new `manifest.json` is always self-contained, so you only ever need to pass the most recent one.
+
 ### As a Slack bot
 
 `bot.py` is a Slack bot that responds to "slash commands" in Slack channels (e.g., `/export-channel`). To connect the bot to the Slack app generated in [Authentication with Slack](#authentication-with-slack), create a file named `.env` in the root directory of this repo, and add the following line:
@@ -134,6 +162,7 @@ The integration tests create temporary channels whose names start with `_test_` 
 
 - [Seb Seager](https://github.com/sebseager) - original author
 - [Gregor Kobilarov](https://github.com/g8rdier) - CSV export functionality and media file support
+- [Hejia Zhang](https://github.com/HejiaZ2023) - incremental exports, human-readable output, inline threaded replies
 
 ## License
 
