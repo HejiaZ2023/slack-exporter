@@ -250,6 +250,10 @@ def channel_history(channel_id, response_url=None, oldest=None, latest=None):
     if result:
         return result
 
+    # Empty result with a time filter means no messages in that window — not an access problem.
+    if oldest is not None or latest is not None:
+        return []
+
     # If we got no results, try joining/unarchiving the channel and retry
     was_archived = _ensure_channel_access(channel_id)
     if was_archived is None:
@@ -418,76 +422,90 @@ def parse_user_list(users):
     return result
 
 
-def parse_channel_history(msgs, users, check_thread=False):
+def _format_message(msg, users):
+    if "user" in msg:
+        usr = {
+            "name": name_from_uid(msg["user"], users),
+            "real_name": name_from_uid(msg["user"], users, real=True),
+        }
+    else:
+        usr = {"name": "", "real_name": "none"}
+
+    timestamp = datetime.fromtimestamp(round(float(msg["ts"]))).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    text = msg["text"] if msg["text"].strip() != "" else "[no message content]"
+    for u in [x["id"] for x in users]:
+        text = str(text).replace(
+            "<@%s>" % u, "<@%s> (%s)" % (u, name_from_uid(u, users))
+        )
+
+    entry = "Message at %s\nUser: %s (%s)\n%s" % (
+        timestamp,
+        usr["name"],
+        usr["real_name"],
+        text,
+    )
+    if "reactions" in msg:
+        rxns = msg["reactions"]
+        entry += "\nReactions: " + ", ".join(
+            "%s (%s)"
+            % (x["name"], ", ".join(name_from_uid(u, users) for u in x["users"]))
+            for x in rxns
+        )
+    if "files" in msg:
+        files = msg["files"]
+        deleted = [
+            f for f in files if "name" not in f or "url_private_download" not in f
+        ]
+        ok_files = [f for f in files if f not in deleted]
+        entry += "\nFiles:\n"
+        entry += "\n".join(
+            " - [%s] %s, %s" % (f["id"], f["name"], f["url_private_download"])
+            for f in ok_files
+        )
+        entry += "\n".join(
+            " - [%s] [deleted, oversize, or unavailable file]" % f["id"]
+            for f in deleted
+        )
+
+    entry += "\n\n%s\n\n" % ("*" * 24)
+    return entry
+
+
+def _indent(text, prefix="    "):
+    lines = []
+    for line in text.split("\n"):
+        lines.append(prefix + line if line.strip() else "")
+    return "\n".join(lines).rstrip() + "\n\n"
+
+
+def parse_channel_history(msgs, users, threads=None):
     if "messages" in msgs:
         msgs = msgs["messages"]
 
-    messages = [x for x in msgs if x["type"] == "message"]  # files are also messages
+    messages = [x for x in msgs if x["type"] == "message"]
+    messages = sorted(messages, key=lambda m: float(m["ts"]))
     body = ""
     for msg in messages:
-        if "user" in msg:
-            usr = {
-                "name": name_from_uid(msg["user"], users),
-                "real_name": name_from_uid(msg["user"], users, real=True),
-            }
-        else:
-            usr = {"name": "", "real_name": "none"}
-
-        timestamp = datetime.fromtimestamp(round(float(msg["ts"]))).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        text = msg["text"] if msg["text"].strip() != "" else "[no message content]"
-        for u in [x["id"] for x in users]:
-            text = str(text).replace(
-                "<@%s>" % u, "<@%s> (%s)" % (u, name_from_uid(u, users))
-            )
-
-        entry = "Message at %s\nUser: %s (%s)\n%s" % (
-            timestamp,
-            usr["name"],
-            usr["real_name"],
-            text,
-        )
-        if "reactions" in msg:
-            rxns = msg["reactions"]
-            entry += "\nReactions: " + ", ".join(
-                "%s (%s)"
-                % (x["name"], ", ".join(name_from_uid(u, users) for u in x["users"]))
-                for x in rxns
-            )
-        if "files" in msg:
-            files = msg["files"]
-            deleted = [
-                f for f in files if "name" not in f or "url_private_download" not in f
-            ]
-            ok_files = [f for f in files if f not in deleted]
-            entry += "\nFiles:\n"
-            entry += "\n".join(
-                " - [%s] %s, %s" % (f["id"], f["name"], f["url_private_download"])
-                for f in ok_files
-            )
-            entry += "\n".join(
-                " - [%s] [deleted, oversize, or unavailable file]" % f["id"]
-                for f in deleted
-            )
-
-        entry += "\n\n%s\n\n" % ("*" * 24)
-
-        if check_thread and "parent_user_id" in msg:
-            entry = "\n".join("\t%s" % x for x in entry.split("\n"))
-
-        # get rid of any extra tabs between trailing newlines
-        body += entry.rstrip("\t")
-
+        body += _format_message(msg, users)
+        if threads and msg.get("ts") in threads:
+            for reply in threads[msg["ts"]]:
+                body += _indent(_format_message(reply, users))
     return body
 
 
 def parse_replies(threads, users):
     body = ""
     for thread in threads:
-        body += parse_channel_history(thread, users, check_thread=True)
+        msgs = thread.get("messages", thread) if isinstance(thread, dict) else thread
+        msgs = [x for x in msgs if x["type"] == "message"]
+        if not msgs:
+            continue
+        body += _format_message(msgs[0], users)
+        for reply in msgs[1:]:
+            body += _indent(_format_message(reply, users))
         body += "\n"
-
     return body
 
 
@@ -597,6 +615,15 @@ def save_as_csv(data, filepath, users):
         writer.writerows(rows)
 
 
+def channel_filename(channel_id, ch_list, users):
+    ch_name, ch_type = name_from_ch_id(channel_id, ch_list)
+    if ch_type == "Direct Message":
+        base = "dm_%s" % name_from_uid(ch_name, users)
+    else:
+        base = "channel_%s" % ch_name
+    return sanitize_filename(base)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -643,6 +670,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--csv", action="store_true", help="Output in CSV format instead of text/JSON"
     )
+    parser.add_argument(
+        "--manifest",
+        help="Path to manifest.json from a prior export; only messages newer than the last run are fetched",
+        type=str,
+    )
 
     a = parser.parse_args()
     ts = str(datetime.strftime(datetime.now(), "%Y-%m-%d_%H%M%S"))
@@ -651,6 +683,17 @@ if __name__ == "__main__":
     if a.o is None and a.files:
         print("If you set --files you also need to set an output directory with -o")
         sys.exit(1)
+
+    prior_manifest = {}
+    if a.manifest:
+        try:
+            with open(a.manifest, "r", encoding="utf-8") as f:
+                prior_manifest = json.load(f)
+            print("Loaded manifest from %s (%d channels)" % (a.manifest, len(prior_manifest)))
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print("Warning: could not load manifest %s: %s" % (a.manifest, e))
+    # carry forward all prior entries; entries for channels with new messages will be updated below
+    manifest = dict(prior_manifest)
 
     if a.o is not None:
         out_dir_parent = os.path.abspath(os.path.expanduser(os.path.expandvars(a.o)))
@@ -672,6 +715,8 @@ if __name__ == "__main__":
 
     def save_replies(channel_hist, channel_id, channel_list, users):
         reply_timestamps = [x["ts"] for x in channel_hist if "reply_count" in x]
+        if not reply_timestamps:
+            return
         ch_replies = channel_replies(reply_timestamps, channel_id)
         if a.json:
             data_replies = ch_replies
@@ -684,9 +729,15 @@ if __name__ == "__main__":
             )
             data_replies = parse_replies(ch_replies, users)
             data_replies = "%s\n%s\n\n%s" % (header_str, sep_str, data_replies)
-        save(data_replies, "channel-replies_%s" % channel_id)
+        fname = channel_filename(channel_id, channel_list, users) + "_replies"
+        save(data_replies, fname)
 
     def save_channel(channel_hist, channel_id, channel_list, users):
+        if not channel_hist:
+            return
+
+        fname = channel_filename(channel_id, channel_list, users)
+
         if a.json:
             data_ch = channel_hist
         elif a.csv:
@@ -697,11 +748,17 @@ if __name__ == "__main__":
                 writer.writerows(rows)
             else:
                 os.makedirs(out_dir, exist_ok=True)
-                csv_path = os.path.join(out_dir, "channel_%s.csv" % channel_id)
+                csv_path = os.path.join(out_dir, "%s.csv" % fname)
                 save_as_csv(channel_hist, csv_path, users)
             return
         else:
-            data_ch = parse_channel_history(channel_hist, users)
+            threads = None
+            if a.r:
+                reply_ts = [x["ts"] for x in channel_hist if "reply_count" in x]
+                if reply_ts:
+                    raw = channel_replies(reply_ts, channel_id)
+                    threads = {t[0]["ts"]: t[1:] for t in raw if t}
+            data_ch = parse_channel_history(channel_hist, users, threads=threads)
             ch_name, ch_type = name_from_ch_id(channel_id, channel_list)
             header_str = "%s Name: %s" % (ch_type, ch_name)
             data_ch = (
@@ -709,9 +766,7 @@ if __name__ == "__main__":
                 % (channel_id, header_str, len(channel_hist), sep_str)
                 + data_ch
             )
-        save(data_ch, "channel_%s" % channel_id)
-        if a.r:
-            save_replies(channel_hist, channel_id, channel_list, users)
+        save(data_ch, fname)
 
     ch_list = channel_list()
     user_list = user_list()
@@ -722,20 +777,42 @@ if __name__ == "__main__":
     if a.lu:
         data = user_list if a.json else parse_user_list(user_list)
         save(data, "user_list")
+    def oldest_for(ch_id):
+        if a.fr:
+            return a.fr
+        if ch_id in prior_manifest:
+            # add epsilon so the last-seen message is not re-fetched (Slack oldest is inclusive)
+            return "%.6f" % (float(prior_manifest[ch_id]) + 0.000001)
+        return None
+
+    def track_manifest(ch_id, ch_hist):
+        if ch_hist:
+            manifest[ch_id] = max(msg["ts"] for msg in ch_hist)
+
     if a.c:
         ch_id = a.ch
         if ch_id:
-            ch_hist = channel_history(ch_id, oldest=a.fr, latest=a.to)
+            ch_hist = channel_history(ch_id, oldest=oldest_for(ch_id), latest=a.to)
+            track_manifest(ch_id, ch_hist)
             save_channel(ch_hist, ch_id, ch_list, user_list)
         else:
             for ch_id in [x["id"] for x in ch_list]:
-                ch_hist = channel_history(ch_id, oldest=a.fr, latest=a.to)
+                ch_hist = channel_history(ch_id, oldest=oldest_for(ch_id), latest=a.to)
+                track_manifest(ch_id, ch_hist)
                 save_channel(ch_hist, ch_id, ch_list, user_list)
     # elif, since we want to avoid asking for channel_history twice
     elif a.r:
         for ch_id in [x["id"] for x in channel_list()]:
-            ch_hist = channel_history(ch_id, oldest=a.fr, latest=a.to)
+            ch_hist = channel_history(ch_id, oldest=oldest_for(ch_id), latest=a.to)
+            track_manifest(ch_id, ch_hist)
             save_replies(ch_hist, ch_id, ch_list, user_list)
 
     if a.files and a.o is not None:
         save_files(out_dir, channel_id=a.ch)
+
+    if a.o is not None and manifest:
+        os.makedirs(out_dir, exist_ok=True)
+        manifest_path = os.path.join(out_dir, "manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=4)
+        print("Wrote manifest to %s" % manifest_path)
